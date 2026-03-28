@@ -17,13 +17,28 @@ const Edit = ({ isLoggedIn }) => {
   const [error, setError] = useState(null);
   const fileInputRef = useRef(null);
   const sectionsRef = useRef({});
+  const [iconsLoaded, setIconsLoaded] = useState(true);
+
+  // Check if Font Awesome is loaded
+  useEffect(() => {
+    const checkIcons = () => {
+      const testIcon = document.createElement('i');
+      testIcon.className = 'fas fa-check';
+      document.body.appendChild(testIcon);
+      const computed = window.getComputedStyle(testIcon);
+      const hasIcon = computed.fontFamily.includes('Font Awesome');
+      document.body.removeChild(testIcon);
+      setIconsLoaded(hasIcon);
+    };
+    checkIcons();
+  }, []);
 
   const tools = [
-    { id: 'compress', label: 'Compress', icon: 'compact-disc', color: '#ff6b6b' },
-    { id: 'merge', label: 'Merge PDFs', icon: 'layer-group', color: '#4ecdc4' },
-    { id: 'convert', label: 'Convert', icon: 'exchange-alt', color: '#45b7d1' },
-    { id: 'preview', label: 'Preview', icon: 'eye', color: '#96ceb4' },
-    { id: 'enhance', label: 'AI Enhance', icon: 'magic', color: '#feca57' },
+    { id: 'compress', label: 'Compress', icon: 'compact-disc', color: '#ff6b6b', fallbackIcon: '📦' },
+    { id: 'merge', label: 'Merge PDFs', icon: 'layer-group', color: '#4ecdc4', fallbackIcon: '📚' },
+    { id: 'convert', label: 'Convert', icon: 'exchange-alt', color: '#45b7d1', fallbackIcon: '🔄' },
+    { id: 'preview', label: 'Preview', icon: 'eye', color: '#96ceb4', fallbackIcon: '👁️' },
+    { id: 'enhance', label: 'AI Enhance', icon: 'magic', color: '#feca57', fallbackIcon: '✨' },
   ];
 
   useEffect(() => {
@@ -92,7 +107,6 @@ const Edit = ({ isLoggedIn }) => {
     e.preventDefault();
     if (draggedIndex === null) return;
     
-    // Only update if position actually changed
     if (draggedIndex !== index) {
       const dragged = files[draggedIndex];
       const newFiles = [...files];
@@ -105,7 +119,7 @@ const Edit = ({ isLoggedIn }) => {
 
   const onDragEnd = () => setDraggedIndex(null);
 
-  // === Process Files - CORRECTED VERSION ===
+  // === Process Files ===
   const processFiles = async () => {
     if (!isLoggedIn) {
       setError('Please login to process files');
@@ -164,7 +178,6 @@ const Edit = ({ isLoggedIn }) => {
         options 
       });
 
-      // Call the API - handle both array and single result
       const result = await api.processFiles(
         files.map(f => f.file),
         activeTool,
@@ -174,14 +187,11 @@ const Edit = ({ isLoggedIn }) => {
 
       console.log('API Response:', result);
 
-      // Handle different response formats
       let processedResults = [];
       
       if (Array.isArray(result)) {
-        // If API returns array
         processedResults = result;
       } else if (result && typeof result === 'object') {
-        // If API returns single object
         processedResults = [result];
       } else {
         throw new Error('Invalid response from server');
@@ -189,7 +199,6 @@ const Edit = ({ isLoggedIn }) => {
 
       setResults(processedResults);
       
-      // Check if any operation was successful
       const hasSuccess = processedResults.some(r => r && r.success);
       
       if (hasSuccess) {
@@ -200,7 +209,6 @@ const Edit = ({ isLoggedIn }) => {
           colors: ['#ff6b6b', '#4ecdc4', '#45b7d1', '#feca57', '#96ceb4']
         });
       } else {
-        // If all failed, show the first error
         const firstError = processedResults.find(r => r && r.message)?.message || 'Processing failed';
         setError(firstError);
       }
@@ -223,30 +231,74 @@ const Edit = ({ isLoggedIn }) => {
   // === Preview ===
   const openPreview = (file) => setPreviewFile(file);
 
-  // === Download - CORRECTED ===
-  const downloadResultFile = (result) => {
+  // === Download with authentication ===
+  const downloadResultFile = async (result) => {
     if (!result.url) {
       setError('Download URL not available');
       return;
     }
 
     try {
-      // For external URLs, open in new tab
-      if (result.url.startsWith('http')) {
-        window.open(result.url, '_blank');
-      } else {
-        // For relative URLs, create download link
-        const a = document.createElement('a');
-        a.href = result.url;
-        a.download = result.fileName || 'download';
-        a.target = '_blank';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+      setUploading(true);
+      
+      let filename = result.fileName;
+      if (!filename && result.url) {
+        const urlParts = result.url.split('/');
+        filename = urlParts[urlParts.length - 1];
+        filename = filename.split('?')[0];
       }
+      
+      if (!filename) {
+        filename = `download_${Date.now()}`;
+      }
+      
+      const token = localStorage.getItem('auth_token');
+      
+      if (!token) {
+        setError('Authentication required. Please login again.');
+        return;
+      }
+      
+      let downloadUrl = result.url;
+      if (!downloadUrl.startsWith('http')) {
+        const API_BASE = import.meta.env.VITE_API_URL || 'https://online-file-editor-backend-1.onrender.com';
+        downloadUrl = `${API_BASE}${downloadUrl}`;
+      }
+      
+      const urlWithToken = new URL(downloadUrl);
+      urlWithToken.searchParams.set('token', token);
+      
+      const response = await fetch(urlWithToken.toString(), {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        credentials: 'include'
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.status}`);
+      }
+      
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      setTimeout(() => {
+        URL.revokeObjectURL(blobUrl);
+      }, 100);
+      
+      setError(null);
+      
     } catch (err) {
       console.error('Download error:', err);
-      setError('Failed to download file');
+      setError(`Failed to download file: ${err.message}`);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -257,230 +309,60 @@ const Edit = ({ isLoggedIn }) => {
     setError(null);
   };
 
-  return (
-    <div className={`edit-canvas ${darkMode ? 'dark' : ''}`}>
-      {/* Floating Action Button */}
-      <button className="fab" onClick={() => fileInputRef.current?.click()}>
-        <i className="fas fa-plus"></i>
-      </button>
+  // === Icon renderer with fallback ===
+  const renderIcon = (iconName, className = '') => {
+    if (!iconsLoaded) {
+      // Return emoji fallback based on icon name
+      const fallbacks = {
+        'fa-plus': '+',
+        'fa-sun': '☀️',
+        'fa-moon': '🌙',
+        'fa-cloud-upload-alt': '📤',
+        'fa-exclamation-triangle': '⚠️',
+        'fa-times': '✕',
+        'fa-trash': '🗑️',
+        'fa-eye': '👁️',
+        'fa-download': '⬇️',
+        'fa-file-pdf': '📄',
+        'fa-file-word': '📝',
+        'fa-file-excel': '📊',
+        'fa-file-archive': '🗜️',
+        'fa-file-audio': '🎵',
+        'fa-file-video': '🎬',
+        'fa-file-image': '🖼️',
+        'fa-compact-disc': '💿',
+        'fa-layer-group': '📚',
+        'fa-exchange-alt': '🔄',
+        'fa-magic': '✨',
+        'fa-check-circle': '✓',
+        'fa-exclamation-circle': '!',
+        'fa-info-circle': 'ℹ️',
+        'fa-wand-magic-sparkles': '✨',
+        'fa-file': '📄'
+      };
+      return <span className={`icon-fallback ${className}`}>{fallbacks[iconName] || '🔧'}</span>;
+    }
+    return <i className={`fas ${iconName} ${className}`}></i>;
+  };
 
-      {/* Theme Toggle */}
-      <button className="theme-toggle" onClick={() => setDarkMode(!darkMode)}>
-        <i className={`fas ${darkMode ? 'fa-sun' : 'fa-moon'}`}></i>
-      </button>
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        onChange={(e) => {
-          if (e.target.files.length > 0) {
-            handleFiles(Array.from(e.target.files));
-          }
-        }}
-        className="hidden-input"
-      />
-
-      {/* Hero Header */}
-      <section className="hero">
-        <div className="hero-content">
-          <h1>
-            <span className="gradient-text">File</span> Studio
-            <span className="premium-badge">Premium</span>
-          </h1>
-          <p>Compress • Merge • Convert • Enhance — Like Canva, but for files</p>
-          <div className="tool-switcher">
-            {tools.map(t => (
-              <button
-                key={t.id}
-                className={`tool-btn ${activeTool === t.id ? 'active' : ''}`}
-                onClick={() => scrollToTool(t.id)}
-                style={{ '--tool-color': t.color }}
-              >
-                <i className={`fas fa-${t.icon}`}></i>
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Upload Zone */}
-      <section className="upload-zone" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
-        <div className="upload-card">
-          <i className="fas fa-cloud-upload-alt"></i>
-          <h3>Drop files here or click +</h3>
-          <p>Supports all formats • Up to 2GB • AI-powered</p>
-        </div>
-      </section>
-
-      {/* Error Display */}
-      {error && (
-        <div className="error-banner">
-          <i className="fas fa-exclamation-triangle"></i>
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="error-close">
-            <i className="fas fa-times"></i>
-          </button>
-        </div>
-      )}
-
-      {/* Files Grid */}
-      {files.length > 0 && (
-        <section className="files-section">
-          <div className="section-header">
-            <h2>Your Files ({files.length})</h2>
-            <button className="clear-btn" onClick={clearAll}>
-              <i className="fas fa-trash"></i> Clear All
-            </button>
-          </div>
-          <div className="files-grid">
-            {files.map((f, i) => (
-              <div
-                key={f.id}
-                className={`file-card ${draggedIndex === i ? 'dragging' : ''}`}
-                draggable={activeTool === 'merge'}
-                onDragStart={(e) => activeTool === 'merge' && onDragStart(e, i)}
-                onDragOver={(e) => activeTool === 'merge' && onDragOver(e, i)}
-                onDragEnd={onDragEnd}
-              >
-                <div className="file-thumb">
-                  {f.type.includes('image') ? (
-                    <img src={f.url} alt={f.name} />
-                  ) : (
-                    <i className={`fas fa-file${getFileIcon(f.type, f.name)}`}></i>
-                  )}
-                </div>
-                <div className="file-info">
-                  <p className="file-name">{f.name}</p>
-                  <p className="file-size">{(f.size / 1024 / 1024).toFixed(2)} MB</p>
-                </div>
-                <div className="file-actions">
-                  <button onClick={() => openPreview(f)} title="Preview">
-                    <i className="fas fa-eye"></i>
-                  </button>
-                  <button onClick={() => downloadResultFile({ url: f.url, fileName: f.name })} title="Download">
-                    <i className="fas fa-download"></i>
-                  </button>
-                  <button onClick={() => removeFile(f.id)} title="Remove">
-                    <i className="fas fa-times"></i>
-                  </button>
-                </div>
-                {uploading && (
-                  <div className="progress-ring">
-                    <svg>
-                      <circle cx="24" cy="24" r="22" className="bg" />
-                      <circle cx="24" cy="24" r="22" className="progress" style={{
-                        strokeDashoffset: 138 - (138 * uploadProgress) / 100
-                      }} />
-                    </svg>
-                    <span>{uploadProgress}%</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Tool Sections */}
-      {tools.map(tool => (
-        <section
-          key={tool.id}
-          ref={el => sectionsRef.current[tool.id] = el}
-          className={`tool-section ${activeTool === tool.id ? 'active' : ''}`}
-          style={{ '--tool-color': tool.color }}
-        >
-          <div className="tool-header">
-            <div className="tool-icon">
-              <i className={`fas fa-${tool.icon}`}></i>
-            </div>
-            <div>
-              <h2>{tool.label}</h2>
-              <p>{getToolDescription(tool.id)}</p>
-            </div>
-          </div>
-
-          <div className="tool-content">
-            {renderToolContent(tool.id, tool.color)}
-          </div>
-
-          <button 
-            className={`process-btn ${uploading ? 'processing' : ''}`} 
-            onClick={processFiles} 
-            disabled={uploading || files.length === 0 || !isLoggedIn}
-          >
-            {uploading ? (
-              <>
-                <div className="spinner"></div>
-                Processing... {uploadProgress}%
-              </>
-            ) : !isLoggedIn ? (
-              'Please Login to Process'
-            ) : (
-              `Start ${tool.label}`
-            )}
-          </button>
-        </section>
-      ))}
-
-      {/* Results */}
-      {results.length > 0 && (
-        <section className="results-section">
-          <h2>Processing Results</h2>
-          <div className="results-grid">
-            {results.map((r, i) => (
-              <div key={i} className={`result-card ${r.success ? 'success' : 'error'}`}>
-                <i className={r.success ? 'fas fa-check-circle' : 'fas fa-exclamation-circle'}></i>
-                <div className="result-info">
-                  <p className="result-file"><strong>{r.fileName || 'Unknown file'}</strong></p>
-                  <p className="result-message">{r.success ? 'Processing completed successfully!' : r.message}</p>
-                  {r.success && r.size && (
-                    <p className="file-stats">
-                      Size: {(r.size / 1024 / 1024).toFixed(2)} MB
-                      {r.savings && (
-                        <span className="savings">
-                          (Saved {(r.savings / 1024 / 1024).toFixed(2)} MB)
-                        </span>
-                      )}
-                    </p>
-                  )}
-                </div>
-                {r.success && r.url && (
-                  <button 
-                    className="download-btn" 
-                    onClick={() => downloadResultFile(r)}
-                    title="Download processed file"
-                  >
-                    <i className="fas fa-download"></i>
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Preview Modal */}
-      {previewFile && (
-        <div className="modal" onClick={() => setPreviewFile(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <button className="close-modal" onClick={() => setPreviewFile(null)}>
-              <i className="fas fa-times"></i>
-            </button>
-            <div className="preview-container">
-              {renderPreview(previewFile)}
-            </div>
-            <div className="modal-footer">
-              <button onClick={() => downloadResultFile({ url: previewFile.url, fileName: previewFile.name })}>
-                <i className="fas fa-download"></i> Download Original
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  // === Get file icon class ===
+  const getFileIconClass = (name) => {
+    const ext = name.split('.').pop().toLowerCase();
+    const icons = {
+      pdf: 'fa-file-pdf',
+      docx: 'fa-file-word',
+      xlsx: 'fa-file-excel',
+      pptx: 'fa-file-powerpoint',
+      zip: 'fa-file-archive',
+      mp3: 'fa-file-audio',
+      mp4: 'fa-file-video',
+      jpg: 'fa-file-image',
+      jpeg: 'fa-file-image',
+      png: 'fa-file-image',
+      webp: 'fa-file-image'
+    };
+    return icons[ext] || 'fa-file';
+  };
 
   function getFileIcon(type, name) {
     const ext = name.split('.').pop().toLowerCase();
@@ -554,7 +436,7 @@ const Edit = ({ isLoggedIn }) => {
         return files.length > 1 ? (
           <div className="merge-info">
             <p className="info-text">
-              <i className="fas fa-info-circle"></i>
+              {renderIcon('fa-info-circle')}
               Drag files to reorder • Top file will be first in merged PDF
             </p>
           </div>
@@ -565,7 +447,7 @@ const Edit = ({ isLoggedIn }) => {
         return files.length === 1 ? (
           <div className="enhance-options">
             <p className="info-text">
-              <i className="fas fa-wand-magic-sparkles"></i>
+              {renderIcon('fa-wand-magic-sparkles')}
               AI will automatically enhance brightness, contrast, and sharpness
             </p>
           </div>
@@ -600,11 +482,244 @@ const Edit = ({ isLoggedIn }) => {
     }
     return (
       <div className="preview-fallback">
-        <i className="fas fa-file"></i>
+        {renderIcon('fa-file')}
         <p>Preview not available for this file type</p>
       </div>
     );
   }
+
+  return (
+    <div className={`edit-canvas ${darkMode ? 'dark' : ''}`}>
+      {/* Floating Action Button */}
+      <button className="fab" onClick={() => fileInputRef.current?.click()}>
+        {renderIcon('fa-plus')}
+      </button>
+
+      {/* Theme Toggle */}
+      <button className="theme-toggle" onClick={() => setDarkMode(!darkMode)}>
+        {renderIcon(darkMode ? 'fa-sun' : 'fa-moon')}
+      </button>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        onChange={(e) => {
+          if (e.target.files.length > 0) {
+            handleFiles(Array.from(e.target.files));
+          }
+        }}
+        className="hidden-input"
+      />
+
+      {/* Hero Header */}
+      <section className="hero">
+        <div className="hero-content">
+          <h1>
+            <span className="gradient-text">File</span> Studio
+            <span className="premium-badge">Premium</span>
+          </h1>
+          <p>Compress • Merge • Convert • Enhance — Like Canva, but for files</p>
+          <div className="tool-switcher">
+            {tools.map(t => (
+              <button
+                key={t.id}
+                className={`tool-btn ${activeTool === t.id ? 'active' : ''}`}
+                onClick={() => scrollToTool(t.id)}
+                style={{ '--tool-color': t.color }}
+              >
+                {iconsLoaded ? (
+                  <i className={`fas fa-${t.icon}`}></i>
+                ) : (
+                  <span>{t.fallbackIcon}</span>
+                )}
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Upload Zone */}
+      <section className="upload-zone" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
+        <div className="upload-card">
+          {renderIcon('fa-cloud-upload-alt')}
+          <h3>Drop files here or click +</h3>
+          <p>Supports all formats • Up to 2GB • AI-powered</p>
+        </div>
+      </section>
+
+      {/* Error Display */}
+      {error && (
+        <div className="error-banner">
+          {renderIcon('fa-exclamation-triangle')}
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="error-close">
+            {renderIcon('fa-times')}
+          </button>
+        </div>
+      )}
+
+      {/* Files Grid */}
+      {files.length > 0 && (
+        <section className="files-section">
+          <div className="section-header">
+            <h2>Your Files ({files.length})</h2>
+            <button className="clear-btn" onClick={clearAll}>
+              {renderIcon('fa-trash')} Clear All
+            </button>
+          </div>
+          <div className="files-grid">
+            {files.map((f, i) => (
+              <div
+                key={f.id}
+                className={`file-card ${draggedIndex === i ? 'dragging' : ''}`}
+                draggable={activeTool === 'merge'}
+                onDragStart={(e) => activeTool === 'merge' && onDragStart(e, i)}
+                onDragOver={(e) => activeTool === 'merge' && onDragOver(e, i)}
+                onDragEnd={onDragEnd}
+              >
+                <div className="file-thumb">
+                  {f.type.includes('image') ? (
+                    <img src={f.url} alt={f.name} />
+                  ) : (
+                    renderIcon(getFileIconClass(f.name))
+                  )}
+                </div>
+                <div className="file-info">
+                  <p className="file-name">{f.name}</p>
+                  <p className="file-size">{(f.size / 1024 / 1024).toFixed(2)} MB</p>
+                </div>
+                <div className="file-actions">
+                  <button onClick={() => openPreview(f)} title="Preview">
+                    {renderIcon('fa-eye')}
+                  </button>
+                  <button onClick={() => downloadResultFile({ url: f.url, fileName: f.name })} title="Download">
+                    {renderIcon('fa-download')}
+                  </button>
+                  <button onClick={() => removeFile(f.id)} title="Remove">
+                    {renderIcon('fa-times')}
+                  </button>
+                </div>
+                {uploading && (
+                  <div className="progress-ring">
+                    <svg>
+                      <circle cx="24" cy="24" r="22" className="bg" />
+                      <circle cx="24" cy="24" r="22" className="progress" style={{
+                        strokeDashoffset: 138 - (138 * uploadProgress) / 100
+                      }} />
+                    </svg>
+                    <span>{uploadProgress}%</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Tool Sections */}
+      {tools.map(tool => (
+        <section
+          key={tool.id}
+          ref={el => sectionsRef.current[tool.id] = el}
+          className={`tool-section ${activeTool === tool.id ? 'active' : ''}`}
+          style={{ '--tool-color': tool.color }}
+        >
+          <div className="tool-header">
+            <div className="tool-icon">
+              {iconsLoaded ? (
+                <i className={`fas fa-${tool.icon}`}></i>
+              ) : (
+                <span style={{ fontSize: '2rem' }}>{tool.fallbackIcon}</span>
+              )}
+            </div>
+            <div>
+              <h2>{tool.label}</h2>
+              <p>{getToolDescription(tool.id)}</p>
+            </div>
+          </div>
+
+          <div className="tool-content">
+            {renderToolContent(tool.id, tool.color)}
+          </div>
+
+          <button 
+            className={`process-btn ${uploading ? 'processing' : ''}`} 
+            onClick={processFiles} 
+            disabled={uploading || files.length === 0 || !isLoggedIn}
+          >
+            {uploading ? (
+              <>
+                <div className="spinner"></div>
+                Processing... {uploadProgress}%
+              </>
+            ) : !isLoggedIn ? (
+              'Please Login to Process'
+            ) : (
+              `Start ${tool.label}`
+            )}
+          </button>
+        </section>
+      ))}
+
+      {/* Results */}
+      {results.length > 0 && (
+        <section className="results-section">
+          <h2>Processing Results</h2>
+          <div className="results-grid">
+            {results.map((r, i) => (
+              <div key={i} className={`result-card ${r.success ? 'success' : 'error'}`}>
+                {renderIcon(r.success ? 'fa-check-circle' : 'fa-exclamation-circle')}
+                <div className="result-info">
+                  <p className="result-file"><strong>{r.fileName || 'Unknown file'}</strong></p>
+                  <p className="result-message">{r.success ? 'Processing completed successfully!' : r.message}</p>
+                  {r.success && r.size && (
+                    <p className="file-stats">
+                      Size: {(r.size / 1024 / 1024).toFixed(2)} MB
+                      {r.savings && (
+                        <span className="savings">
+                          (Saved {(r.savings / 1024 / 1024).toFixed(2)} MB)
+                        </span>
+                      )}
+                    </p>
+                  )}
+                </div>
+                {r.success && r.url && (
+                  <button 
+                    className="download-btn" 
+                    onClick={() => downloadResultFile(r)}
+                    title="Download processed file"
+                  >
+                    {renderIcon('fa-download')}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Preview Modal */}
+      {previewFile && (
+        <div className="modal" onClick={() => setPreviewFile(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <button className="close-modal" onClick={() => setPreviewFile(null)}>
+              {renderIcon('fa-times')}
+            </button>
+            <div className="preview-container">
+              {renderPreview(previewFile)}
+            </div>
+            <div className="modal-footer">
+              <button onClick={() => downloadResultFile({ url: previewFile.url, fileName: previewFile.name })}>
+                {renderIcon('fa-download')} Download Original
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
 
 export default Edit;

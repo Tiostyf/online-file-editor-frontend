@@ -1,8 +1,8 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE = import.meta.env.VITE_API_URL || 'https://online-file-editor-backend-1.onrender.com';
 
 const TOKEN_KEY = 'auth_token';
 
-// Improved token handling
+// Improved token handling with logging
 const getToken = () => {
   const token = localStorage.getItem(TOKEN_KEY);
   // Validate token before returning
@@ -11,6 +11,7 @@ const getToken = () => {
     localStorage.removeItem(TOKEN_KEY);
     return null;
   }
+  console.log('Token retrieved successfully, length:', token.length);
   return token;
 };
 
@@ -29,19 +30,23 @@ const setToken = (token) => {
   }
 
   localStorage.setItem(TOKEN_KEY, token);
+  console.log('Token stored successfully, length:', token.length);
 };
 
 const clearToken = () => {
   localStorage.removeItem(TOKEN_KEY);
+  console.log('Token cleared');
 };
 
 const authHeaders = () => {
   const token = getToken();
   if (!token) {
+    console.warn('No token available for auth headers');
     return {};
   }
+  console.log('Adding auth header with token');
   return {
-    Authorization: `Bearer ${token}`
+    'Authorization': `Bearer ${token}`
   };
 };
 
@@ -103,11 +108,18 @@ export const logout = () => {
   return Promise.resolve();
 };
 
-export const isLoggedIn = () => !!getToken();
+export const isLoggedIn = () => {
+  const loggedIn = !!getToken();
+  console.log('isLoggedIn check:', loggedIn);
+  return loggedIn;
+};
 
 // === PROFILE ===
 export const fetchProfile = () =>
-  fetch(`${API_BASE}/api/profile`, { headers: authHeaders() })
+  fetch(`${API_BASE}/api/profile`, { 
+    headers: authHeaders(),
+    credentials: 'include'
+  })
     .then(handleResponse)
     .then(data => {
       if (data.success && data.user) return data.user;
@@ -118,7 +130,8 @@ export const updateProfile = (updates) =>
   fetch(`${API_BASE}/api/profile`, {
     method: 'PUT',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify(updates)
+    body: JSON.stringify(updates),
+    credentials: 'include'
   })
     .then(handleResponse)
     .then(data => {
@@ -178,8 +191,18 @@ export const processFiles = async (files, tool, options = {}, onProgress = () =>
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}/api/process`);
 
+    // Get token and set authorization header
     const token = getToken();
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    console.log('Processing files - Token available:', !!token);
+    
+    if (token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      console.log('Authorization header set for process request');
+    } else {
+      console.error('No token available for process request');
+      reject(new Error('Authentication required. Please login.'));
+      return;
+    }
 
     // Upload progress
     xhr.upload.onprogress = (e) => {
@@ -190,7 +213,9 @@ export const processFiles = async (files, tool, options = {}, onProgress = () =>
     };
 
     xhr.onload = () => {
+      console.log('Process response status:', xhr.status);
       const data = safeJsonParse(xhr.responseText);
+      console.log('Process response data:', data);
 
       if (xhr.status === 200 && data.success) {
         // Handle preview tool response differently
@@ -204,7 +229,7 @@ export const processFiles = async (files, tool, options = {}, onProgress = () =>
         } else {
           resolve({
             success: true,
-            url: data.url.startsWith('http') ? data.url : API_BASE + data.url,
+            url: data.url,
             fileName: data.fileName,
             size: data.size,
             originalSize: data.originalSize,
@@ -217,8 +242,15 @@ export const processFiles = async (files, tool, options = {}, onProgress = () =>
       }
     };
 
-    xhr.onerror = () => reject(new Error('Network error'));
-    xhr.ontimeout = () => reject(new Error('Request timeout'));
+    xhr.onerror = () => {
+      console.error('Network error during process request');
+      reject(new Error('Network error. Please check your connection.'));
+    };
+    
+    xhr.ontimeout = () => {
+      console.error('Request timeout during process');
+      reject(new Error('Request timeout. Please try again.'));
+    };
 
     xhr.send(form);
   });
@@ -226,7 +258,10 @@ export const processFiles = async (files, tool, options = {}, onProgress = () =>
 
 // === HISTORY ===
 export const getHistory = (page = 1) =>
-  fetch(`${API_BASE}/api/history?page=${page}`, { headers: authHeaders() })
+  fetch(`${API_BASE}/api/history?page=${page}`, { 
+    headers: authHeaders(),
+    credentials: 'include'
+  })
     .then(handleResponse)
     .then(data => {
       if (data.success) {
@@ -236,14 +271,43 @@ export const getHistory = (page = 1) =>
     });
 
 // === DOWNLOAD FILE ===
-export const downloadFile = (filename) => {
+export const downloadFile = async (filename) => {
   const token = getToken();
-  const url = `${API_BASE}/api/download/${filename}`;
-
-  if (token) {
-    window.open(`${url}?token=${token}`, '_blank');
-  } else {
-    window.open(url, '_blank');
+  if (!token) {
+    console.error('No token available for download');
+    throw new Error('Authentication required. Please login.');
+  }
+  
+  const url = `${API_BASE}/api/download/${filename}?token=${token}`;
+  console.log('Download URL:', url);
+  
+  try {
+    // Use fetch to download with proper headers
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      },
+      credentials: 'include'
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Download failed: ${response.status}`);
+    }
+    
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Download error:', error);
+    throw error;
   }
 };
 
@@ -253,6 +317,26 @@ export const checkHealth = () =>
     .then(handleResponse)
     .then(data => ({ ok: true, data }))
     .catch(() => ({ ok: false, error: 'Backend offline' }));
+
+// === VERIFY TOKEN ===
+export const verifyToken = () => {
+  const token = getToken();
+  if (!token) return Promise.resolve(false);
+  
+  return fetch(`${API_BASE}/api/profile`, {
+    headers: authHeaders(),
+    credentials: 'include'
+  })
+    .then(response => {
+      if (response.ok) return true;
+      clearToken();
+      return false;
+    })
+    .catch(() => {
+      clearToken();
+      return false;
+    });
+};
 
 // === EXPORT ALL ===
 export default {
@@ -265,5 +349,6 @@ export default {
   processFiles,
   getHistory,
   downloadFile,
-  checkHealth
+  checkHealth,
+  verifyToken
 };
